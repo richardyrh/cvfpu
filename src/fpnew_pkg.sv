@@ -13,6 +13,8 @@
 
 // Author: Stefan Mach <smach@iis.ee.ethz.ch>
 
+`ifndef FPNEW_PKG
+`define FPNEW_PKG
 package fpnew_pkg;
 
   // ---------
@@ -493,3 +495,4 @@ package fpnew_pkg;
   endfunction
 
 endpackage
+`endif
