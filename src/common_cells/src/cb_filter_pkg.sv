@@ -11,6 +11,9 @@
 // Author: Wolfgang Roenninger <wroennin@ethz.ch>
 
 /// Package with the struct definition for the seeds and an example.
+
+`ifndef CB_FILTER_PKG
+`define CB_FILTER_PKG
 package cb_filter_pkg;
   typedef struct packed {
     int unsigned PermuteSeed;
@@ -24,3 +27,4 @@ package cb_filter_pkg;
     '{PermuteSeed: 32'd294388,    XorSeed: 32'd65146511 }
   };
 endpackage
+`endif

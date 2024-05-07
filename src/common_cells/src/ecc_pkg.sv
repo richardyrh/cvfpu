@@ -12,6 +12,8 @@
 //
 /// Contains common ECC definitions and helper functions.
 
+`ifndef ECC_PKG
+`define ECC_PKG
 package ecc_pkg;
 
   // Calculate required ECC parity width:
@@ -29,3 +31,4 @@ package ecc_pkg;
   endfunction
 
 endpackage
+`endif
