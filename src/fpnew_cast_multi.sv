@@ -204,10 +204,12 @@ module fpnew_cast_multi #(
     localparam int unsigned MAN_BITS = fpnew_pkg::man_bits(fpnew_pkg::fp_format_e'(fmt));
 
     if (FpFmtConfig[fmt]) begin : active_format
+      localparam fpnew_pkg::fp_format_e FpFormat = fpnew_pkg::fp_format_e'(fmt);
+
       // Classify input
       fpnew_classifier #(
-        .FpFormat    ( fpnew_pkg::fp_format_e'(fmt) ),
-        .NumOperands ( 1                            )
+        .FpFormat    ( FpFormat ),
+        .NumOperands ( 1        )
       ) i_fpnew_classifier (
         .operands_i ( operands_q[FP_WIDTH-1:0] ),
         .is_boxed_i ( is_boxed_q[fmt]          ),
@@ -457,9 +459,12 @@ module fpnew_cast_multi #(
       end
     // Handle FP over-/underflows
     end else begin
-      // Overflow or infinities (for proper rounding)
-      if ((destination_exp_q >= signed'(2**fpnew_pkg::exp_bits(dst_fmt_q2))-1) ||
-          (~src_is_int_q && info_q.is_inf)) begin
+      // Infinities
+      if (~src_is_int_q && info_q.is_inf) begin
+        final_exp       = unsigned'(2**fpnew_pkg::exp_bits(dst_fmt_q2)-1); // largest exponent
+        preshift_mant   = '0;
+      // Overflow (for proper rounding)
+      end else if (destination_exp_q >= signed'(2**fpnew_pkg::exp_bits(dst_fmt_q2))-1) begin
         final_exp       = unsigned'(2**fpnew_pkg::exp_bits(dst_fmt_q2)-2); // largest normal value
         preshift_mant   = '1;                           // largest normal value and RS bits set
         of_before_round = 1'b1;
@@ -718,13 +723,13 @@ module fpnew_cast_multi #(
   logic [WIDTH-1:0]   fp_result, int_result;
   fpnew_pkg::status_t fp_status, int_status;
 
-  assign fp_regular_status.NV = src_is_int_q & (of_before_round | of_after_round); // overflow is invalid for I2F casts
+  assign fp_regular_status.NV = 1'b0; // floating-point results are always valid
   assign fp_regular_status.DZ = 1'b0; // no divisions
-  assign fp_regular_status.OF = ~src_is_int_q & (~info_q.is_inf & (of_before_round | of_after_round)); // inf casts no OF
+  assign fp_regular_status.OF = (src_is_int_q | ~info_q.is_inf) & (of_before_round | of_after_round); // inf casts no OF
   assign fp_regular_status.UF = uf_after_round & fp_regular_status.NX;
-  assign fp_regular_status.NX = src_is_int_q ? (| fp_round_sticky_bits) // overflow is invalid in i2f
-            : (| fp_round_sticky_bits) | (~info_q.is_inf & (of_before_round | of_after_round));
-  assign int_regular_status = '{NX: (| int_round_sticky_bits), default: 1'b0};
+  assign fp_regular_status.NX = (| fp_round_sticky_bits) | ((src_is_int_q | ~info_q.is_inf) & (of_before_round | of_after_round));
+  assign int_regular_status = '{NV: of_before_round | of_after_round, // overflow is invalid for F2I casts
+                                NX: (| int_round_sticky_bits), default: 1'b0};
 
   assign fp_result  = fp_result_is_special  ? fp_special_result  : fmt_result[dst_fmt_q2];
   assign fp_status  = fp_result_is_special  ? fp_special_status  : fp_regular_status;

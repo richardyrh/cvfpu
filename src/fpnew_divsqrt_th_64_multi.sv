@@ -11,11 +11,13 @@
 //
 // SPDX-License-Identifier: SHL-0.51
 
-// Author: Stefan Mach <smach@iis.ee.ethz.ch>
+// Authors: Stefan Mach <smach@iis.ee.ethz.ch>
+//          Roman Marquart <maroman@student.ethz.ch>
 
-`include "registers.svh"
 
-module fpnew_divsqrt_multi #(
+`include "common_cells/registers.svh"
+
+module fpnew_divsqrt_th_64_multi #(
   parameter fpnew_pkg::fmt_logic_t   FpFmtConfig  = '1,
   // FPU configuration
   parameter int unsigned             NumPipeRegs = 0,
@@ -90,7 +92,7 @@ module fpnew_divsqrt_multi #(
 
   // Input pipeline signals, index i holds signal after i register stages
   logic                  [0:NUM_INP_REGS][1:0][WIDTH-1:0]       inp_pipe_operands_q;
-  fpnew_pkg::roundmode_e [0:NUM_INP_REGS]                       inp_pipe_rnd_mode_q;
+  fpnew_pkg::roundmode_e [0:NUM_INP_REGS]                       inp_pipe_rnd_mode_q /*verilator split_var */;
   fpnew_pkg::operation_e [0:NUM_INP_REGS]                       inp_pipe_op_q;
   fpnew_pkg::fp_format_e [0:NUM_INP_REGS]                       inp_pipe_dst_fmt_q;
   TagType                [0:NUM_INP_REGS]                       inp_pipe_tag_q;
@@ -142,32 +144,51 @@ module fpnew_divsqrt_multi #(
   assign dst_fmt_q  = inp_pipe_dst_fmt_q[NUM_INP_REGS];
   assign in_valid_q = inp_pipe_valid_q[NUM_INP_REGS];
 
+  logic last_inp_reg_ena;
+  if (NUM_INP_REGS >= 1) begin : gen_last_inp_reg_ena_valid
+    assign last_inp_reg_ena = reg_ena_i[NUM_INP_REGS-1];
+  end else begin : gen_last_inp_reg_ena_zero
+    assign last_inp_reg_ena = 1'b0;
+  end
+
   logic ext_op_start_q;
-  `FF(ext_op_start_q, reg_ena_i[NUM_INP_REGS-1], 1'b0)
+  `FF(ext_op_start_q, last_inp_reg_ena, 1'b0)
 
   // -----------------
   // Input processing
   // -----------------
-  logic [1:0]       divsqrt_fmt;
-  logic [1:0][63:0] divsqrt_operands; // those are fixed to 64bit
-  logic             input_is_fp8;
+  logic [3:0] divsqrt_fmt;
 
   // Translate fpnew formats into divsqrt formats
-  always_comb begin : translate_fmt
-    unique case (dst_fmt_q)
-      fpnew_pkg::FP32:    divsqrt_fmt = 2'b00;
-      fpnew_pkg::FP64:    divsqrt_fmt = 2'b01;
-      fpnew_pkg::FP16:    divsqrt_fmt = 2'b10;
-      fpnew_pkg::FP16ALT: divsqrt_fmt = 2'b11;
-      default:            divsqrt_fmt = 2'b10; // maps also FP8 to FP16
-    endcase
-
-    // Only if FP8 is enabled
-    input_is_fp8 = FpFmtConfig[fpnew_pkg::FP8] & (dst_fmt_q == fpnew_pkg::FP8);
-
-    // If FP8 is supported, map it to an FP16 value
-    divsqrt_operands[0] = input_is_fp8 ? operands_q[0] << 8 : operands_q[0];
-    divsqrt_operands[1] = input_is_fp8 ? operands_q[1] << 8 : operands_q[1];
+  if(WIDTH == 64) begin : translate_fmt_64_bits
+    always_comb begin : translate_fmt
+      unique case (dst_fmt_q)
+        fpnew_pkg::FP64:    divsqrt_fmt = 4'b1000;
+        fpnew_pkg::FP32:    divsqrt_fmt = 4'b0100;
+        fpnew_pkg::FP16:    divsqrt_fmt = 4'b0010;
+        fpnew_pkg::FP16ALT: divsqrt_fmt = 4'b0001;
+        default:            divsqrt_fmt = 4'b1000; // 64 bit max width
+      endcase
+    end
+  end else if(WIDTH == 32) begin : translate_fmt_32_bits
+    always_comb begin : translate_fmt
+      unique case (dst_fmt_q)
+        fpnew_pkg::FP32:    divsqrt_fmt = 4'b0100;
+        fpnew_pkg::FP16:    divsqrt_fmt = 4'b0010;
+        fpnew_pkg::FP16ALT: divsqrt_fmt = 4'b0001;
+        default:            divsqrt_fmt = 4'b0100; // 32 bit max width
+      endcase
+    end
+  end else if(WIDTH == 16) begin : translate_fmt_16_bits
+    always_comb begin : translate_fmt
+      unique case (dst_fmt_q)
+        fpnew_pkg::FP16:    divsqrt_fmt = 4'b0010;
+        fpnew_pkg::FP16ALT: divsqrt_fmt = 4'b0001;
+        default:            divsqrt_fmt = 4'b0010; // 16 bit max width
+      endcase
+    end
+  end else begin
+    $fatal(1, "DivSqrt THMULTI: Unsupported WIDTH (the supported width are 64, 32, 16)");
   end
 
   // ------------
@@ -191,14 +212,13 @@ module fpnew_divsqrt_multi #(
   assign op_starting = div_valid | sqrt_valid;
 
   // Hold additional information while the operation is in progress
-  logic result_is_fp8_q;
+  
   TagType result_tag_q;
   logic result_mask_q;
   AuxType result_aux_q;
   logic result_vec_op_q;
 
   // Fill the registers everytime a valid operation arrives (load FF, active low asynch rst)
-  `FFL(result_is_fp8_q, input_is_fp8,                 op_starting, '0)
   `FFL(result_tag_q,    inp_pipe_tag_q[NUM_INP_REGS], op_starting, '0)
   `FFL(result_mask_q,   inp_pipe_mask_q[NUM_INP_REGS],op_starting, '0)
   `FFL(result_aux_q,    inp_pipe_aux_q[NUM_INP_REGS], op_starting, '0)
@@ -211,8 +231,8 @@ module fpnew_divsqrt_multi #(
   // When one divsqrt unit completes an operation, keep its done high, waiting for the other lanes
   // As soon as all the lanes are over, we can clear this FF and start with a new operation
   logic unit_done_clear;
-  `FFLARNC(unit_done_q, unit_done, unit_done, unit_done_clear, 1'b0, clk_i, rst_ni)
-  assign unit_done_clear = simd_synch_done | reg_ena_i[NUM_INP_REGS-1];
+  `FFLARNC(unit_done_q, unit_done, unit_done, unit_done_clear, 1'b0, clk_i, rst_ni);
+  assign unit_done_clear = simd_synch_done | last_inp_reg_ena;
   // Tell the other units that this unit has finished now or in the past
   assign divsqrt_done_o = (unit_done_q | unit_done) & result_vec_op_q;
 
@@ -288,37 +308,132 @@ module fpnew_divsqrt_multi #(
   // -----------------
   // DIVSQRT instance
   // -----------------
-  logic [63:0]        unit_result;
-  logic [WIDTH-1:0]   adjusted_result, held_result_q;
+  logic [63:0]   unit_result, held_result_q;
   fpnew_pkg::status_t unit_status, held_status_q;
   logic               hold_en;
+  
+  logic vfdsu_dp_fdiv_busy;
+  
+  // Regs to save current instruction
+  fpnew_pkg::roundmode_e rm_q;
+  logic[3:0] divsqrt_fmt_q;
+  fpnew_pkg::operation_e divsqrt_op_q;
+  logic div_op, sqrt_op;
+  logic [WIDTH-1:0] srcf0_q, srcf1_q;
+  logic [63:0] srcf0, srcf1;
+  
+  // Save operands in regs, C910 saves all the following information in its regs in the next cycle.
+  `FFL(rm_q, rnd_mode_q, op_starting, fpnew_pkg::RNE)
+  `FFL(divsqrt_fmt_q, divsqrt_fmt, op_starting, '0)
+  `FFL(divsqrt_op_q, op_q, op_starting, fpnew_pkg::DIV)
+  `FFL(srcf0_q, operands_q[0], op_starting, '0)
+  `FFL(srcf1_q, operands_q[1], op_starting, '0)
 
-  div_sqrt_top_mvp i_divsqrt_lei (
-   .Clk_CI           ( clk_i                               ),
-   .Rst_RBI          ( rst_ni                              ),
-   .Div_start_SI     ( div_valid                           ),
-   .Sqrt_start_SI    ( sqrt_valid                          ),
-   .Operand_a_DI     ( divsqrt_operands[0]                 ),
-   .Operand_b_DI     ( divsqrt_operands[1]                 ),
-   .RM_SI            ( rnd_mode_q                          ),
-   .Precision_ctl_SI ( '0                                  ),
-   .Format_sel_SI    ( divsqrt_fmt                         ),
-   .Kill_SI          ( flush_i | reg_ena_i[NUM_INP_REGS-1] ),
-   .Result_DO        ( unit_result                         ),
-   .Fflags_SO        ( unit_status                         ),
-   .Ready_SO         ( unit_ready                          ),
-   .Done_SO          ( unit_done                           )
+  // NaN-box inputs with max WIDTH
+  if(WIDTH == 64) begin : gen_fmt_64_bits
+    always_comb begin : NaN_box_inputs
+      if(divsqrt_fmt_q == 4'b1000) begin // 64-bit
+        srcf0[63:0] = srcf0_q[63:0];
+        srcf1[63:0] = srcf1_q[63:0];
+      end else if(divsqrt_fmt_q == 4'b0100) begin // 32-bit
+        srcf0[63:32] = '1;
+        srcf1[63:32] = '1;
+        srcf0[31:0] = srcf0_q[31:0];
+        srcf1[31:0] = srcf1_q[31:0];
+      end else if((divsqrt_fmt_q == 4'b0010) || (divsqrt_fmt_q == 4'b0001)) begin //16-bit
+        srcf0[63:16] = '1;
+        srcf1[63:16] = '1;
+        srcf0[15:0] = srcf0_q[15:0];
+        srcf1[15:0] = srcf1_q[15:0];
+      end else begin // Unsupported
+        srcf0[63:0] = '1;
+        srcf1[63:0] = '1;
+      end
+    end
+  end else if (WIDTH == 32) begin : gen_fmt_32_bits
+    always_comb begin : NaN_box_inputs
+      if(divsqrt_fmt_q == 4'b0100) begin // 32-bit
+        srcf0[63:32] = '1;
+        srcf1[63:32] = '1;
+        srcf0[31:0] = srcf0_q[31:0];
+        srcf1[31:0] = srcf1_q[31:0];
+      end else if((divsqrt_fmt_q == 4'b0010) || (divsqrt_fmt_q == 4'b0001)) begin // 16-bit
+        srcf0[63:16] = '1;
+        srcf1[63:16] = '1;
+        srcf0[15:0] = srcf0_q[15:0];
+        srcf1[15:0] = srcf1_q[15:0];
+      end else begin // Unsupported
+        srcf0[63:0] = '1;
+        srcf1[63:0] = '1;
+      end
+    end
+  end else if (WIDTH == 16) begin : gen_fmt_16_bits
+    always_comb begin : NaN_box_inputs
+      if((divsqrt_fmt_q == 4'b0010) || (divsqrt_fmt_q == 4'b0001)) begin // 16-bit
+        srcf0[63:16] = '1;
+        srcf1[63:16] = '1;
+        srcf0[15:0] = srcf0_q[15:0];
+        srcf1[15:0] = srcf1_q[15:0];
+      end else begin // Unsupported
+        srcf0[63:0] = '1;
+        srcf1[63:0] = '1;
+      end
+    end
+  end else begin
+    $fatal(1, "DivSqrt THMULTI: Unsupported WIDTH (the supported width are 64, 32, 16)");
+  end
+
+  assign div_op = (divsqrt_op_q == fpnew_pkg::DIV) ? 1'b1 : 1'b0;
+  assign sqrt_op = (divsqrt_op_q != fpnew_pkg::DIV) ? 1'b1 : 1'b0;
+  
+  // Select func 1 cycle after div issue
+  logic func_sel;
+  `FFLARNC(func_sel, 1'b1, op_starting, func_sel, 1'b0, clk_i, rst_ni)
+
+  // Select operands 2 cycles after div issue
+  logic op_sel;
+  `FFLARNC(op_sel, 1'b1, func_sel, op_sel, 1'b0, clk_i, rst_ni)
+
+  ct_vfdsu_top i_ct_vfdsu_top (
+    .cp0_vfpu_icg_en                ( 1'b0                      ), // Internal clock gating, (module enable) doesn't matter when the clk_gate module is redundant anyway
+    .cp0_yy_clk_en                  ( 1'b1                      ), // Global clock enable (same as above)
+    .cpurst_b                       ( rst_ni                    ), // Reset
+    .dp_vfdsu_ex1_pipex_dst_ereg    ( '0                        ), // Don't care, used in C910
+    .dp_vfdsu_ex1_pipex_dst_vreg    ( '0                        ), // Don't care, used in C910
+    .dp_vfdsu_ex1_pipex_iid         ( '0                        ), // Don't care, used in C910
+    .dp_vfdsu_ex1_pipex_imm0        ( 3'b111                    ), // Round mode, set to 3'b111 to select vfpu_yy_xx_rm signal
+    .dp_vfdsu_ex1_pipex_sel         ( op_sel                    ), // 3. Select operands, start operation
+    .dp_vfdsu_ex1_pipex_srcf0       ( srcf0                     ), // Input for operand 0
+    .dp_vfdsu_ex1_pipex_srcf1       ( srcf1                     ), // Input for operand 1
+    .dp_vfdsu_fdiv_gateclk_issue    ( 1'b1                      ), // Local clock enable (same as above)
+    .dp_vfdsu_idu_fdiv_issue        ( op_starting               ), // 1. Issue fdiv (FSM in ctrl)
+    .forever_cpuclk                 ( clk_i                     ), // Clock input
+    .idu_vfpu_rf_pipex_func         ( {3'b0, divsqrt_fmt_q, 11'b0 ,sqrt_op, div_op} ), // Defines format (bits 16,15) and operation (bits 1,0)
+    .idu_vfpu_rf_pipex_gateclk_sel  ( func_sel                  ), // 2. Select func
+    .pad_yy_icg_scan_en             ( 1'b0                      ), // SE signal for the redundant clock gating module
+    .rtu_yy_xx_flush                ( flush_i | last_inp_reg_ena), // Flush
+    .vfpu_yy_xx_dqnan               ( 1'b0                      ), // Disable qNaN, set to 1 if sNaN is used
+    .vfpu_yy_xx_rm                  ( rm_q                      ), // Round mode. redundant if imm0 set to the same
+    .pipex_dp_vfdsu_ereg            (                           ), // Don't care, used by C910
+    .pipex_dp_vfdsu_ereg_data       ( unit_status               ), // Output: status flags
+    .pipex_dp_vfdsu_freg_data       ( unit_result               ), // Output: result
+    .pipex_dp_vfdsu_inst_vld        ( unit_done                 ), // The result is valid
+    .pipex_dp_vfdsu_vreg            (                           ), // Don't care, used by C910
+    .vfdsu_dp_fdiv_busy             ( vfdsu_dp_fdiv_busy        ), // Unit is busy, data in flight
+    .vfdsu_dp_inst_wb_req           (                           ), // Don't care, used by C910
+    .vfdsu_ifu_debug_ex2_wait       (                           ), // Debug output
+    .vfdsu_ifu_debug_idle           (                           ), // Debug output
+    .vfdsu_ifu_debug_pipe_busy      (                           )  // Debug output
   );
 
-  // Adjust result width and fix FP8
-  assign adjusted_result = result_is_fp8_q ? unit_result >> 8 : unit_result;
+  assign unit_ready = !vfdsu_dp_fdiv_busy;
 
   // Hold the result when one lane has finished execution, except when all the lanes finish together,
   // or the operation is not vectorial, and the result can be accepted downstream
   assign hold_en = unit_done & (~simd_synch_done_i | ~out_ready) & ~(~result_vec_op_q & out_ready);
   // The Hold register (load, no reset)
-  `FFLNR(held_result_q, adjusted_result, hold_en, clk_i)
-  `FFLNR(held_status_q, unit_status,     hold_en, clk_i)
+  `FFLNR(held_result_q, unit_result, hold_en, clk_i)
+  `FFLNR(held_status_q, unit_status, hold_en, clk_i)
 
   // --------------
   // Output Select
@@ -326,7 +441,7 @@ module fpnew_divsqrt_multi #(
   logic [WIDTH-1:0]   result_d;
   fpnew_pkg::status_t status_d;
   // Prioritize hold register data
-  assign result_d = unit_done_q ? held_result_q : adjusted_result;
+  assign result_d[WIDTH-1:0] = unit_done_q ? held_result_q[WIDTH-1:0] : unit_result[WIDTH-1:0];
   assign status_d = unit_done_q ? held_status_q : unit_status;
 
   // ----------------
@@ -382,3 +497,4 @@ module fpnew_divsqrt_multi #(
   assign out_valid_o     = out_pipe_valid_q[NUM_OUT_REGS];
   assign busy_o          = (| {inp_pipe_valid_q, unit_busy, out_pipe_valid_q});
 endmodule
+

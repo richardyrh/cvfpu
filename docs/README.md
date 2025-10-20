@@ -33,14 +33,14 @@ SystemVerilog `interface`s are not used due to poor support in some EDA tools.
 The configuration parameters use data types defined in `fpnew_pkg` which are structs containing multi-dimensional arrays of custom enumeration types.
 For more in-depth explanations on how to configure the unit and the layout of the types used, please refer to the [Configuration Section](#configuration).
 
-|  Parameter Name  |                                                         Description                                                           |
-|------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| `Features`       | Specifies the features of the FPU, such as the set of supported formats and operations.                                       |
-| `Implementation` | Allows to control how the above features are implemented, such as the number of pipeline stages and architecture of subunits  |
-| `PulpDivsqrt`    | Enables T-head-based DivSqrt unit when set to 0. Supported for FP32-only instances                                            |
-| `TagType`        | The SystemVerilog data type of the operation tag                                                                              |
-| `TrueSIMDClass`  | If enabled, the result of a classify operation in vectorial mode will be RISC-V compliant if each output has at least 10 bits |
-| `EnableSIMDMask` | Enable the RISC-V floating-point status flags masking of inactive vectorial lanes. When disabled, `simd_mask_i` is inactive   |
+|  Parameter Name  |                                                         Description                                                          |
+|------------------|------------------------------------------------------------------------------------------------------------------------------|
+| `Features`       | Specifies the features of the FPU, such as the set of supported formats and operations.                                      |
+| `Implementation` | Allows to control how the above features are implemented, such as the number of pipeline stages and architecture of subunits |
+| `DivSqrtSel`     | Chooses among the three supported DivSqrt units                                                                              |
+| `TagType`        | The SystemVerilog data type of the operation tag                                                                             |
+| `TrueSIMDClass`  | If enabled, the result of a classify operation in vectorial mode will be RISC-V compliant if each output has at least 10 bits|
+| `EnableSIMDMask` | Enable the RISC-V floating-point status flags masking of inactive vectorial lanes. When disabled, `simd_mask_i` is inactive  |
 
 ### Ports
 
@@ -95,6 +95,7 @@ Enumeration of type `logic [2:0]` holding available rounding modes, encoded for 
 Enumeration of type `logic [3:0]` holding the FP operation.
 The operation modifier `op_mod_i` can change the operation carried out.
 Unless noted otherwise, the first operand `op[0]` is used for the operation.
+Unless noted otherwise, `op[0]` and `op[1]` are given in source FP format and `op[2]` is given in destination FP format.
 
 | Enumerator | Modifier |                                                                                                    Operation                                                                                                     |
 |------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -102,8 +103,8 @@ Unless noted otherwise, the first operand `op[0]` is used for the operation.
 | `FMADD`    | `1`      | Fused multiply-subtract (`(op[0] * op[1]) - op[2]`)                                                                                                                                                              |
 | `FNMSUB`   | `0`      | Negated fused multiply-subtract (`-(op[0] * op[1]) + op[2]`)                                                                                                                                                     |
 | `FNMSUB`   | `1`      | Negated fused multiply-add (`-(op[0] * op[1]) - op[2]`)                                                                                                                                                          |
-| `ADD`      | `0`      | Addition (`op[1] + op[2]`) *note the operand indices*                                                                                                                                                            |
-| `ADD`      | `1`      | Subtraction (`op[1] - op[2]`) *note the operand indices*                                                                                                                                                         |
+| `ADD/ADDS` | `0`      | Addition (`op[1] + op[2]`) *note the operand indices*. For `ADD`, `op[1]` is in source FP format and `op[2]` in destination FP format (default). When `ADDS` is used, both operands are in source FP format.     |
+| `ADD/ADDS` | `1`      | Subtraction (`op[1] - op[2]`) *note the operand indices*. For `ADD`, `op[1]` is in source FP format and `op[2]` in destination FP format (default). When `ADDS` is used, both operands are in source FP format.  |
 | `MUL`      | `0`      | Multiplication (`op[0] * op[1]`)                                                                                                                                                                                 |
 | `DIV`      | `0`      | Division (`op[0] / op[1]`)                                                                                                                                                                                       |
 | `SQRT`     | `0`      | Square root                                                                                                                                                                                                      |
@@ -231,7 +232,7 @@ typedef struct packed {
 ```
 The fields of this struct behave as follows:
 
-##### `Width` - Datapath Wdith
+##### `Width` - Datapath Width
 
 Specifies the width of the FPU datapath and of the input and output data ports (`operands_i`/`result_o`).
 It must be larger or equal to the width of the widest enabled FP and integer format.
@@ -351,7 +352,16 @@ The configuration  `pipe_config_t` is an enumeration of type `logic [1:0]` holdi
 | `INSIDE`      | All registers are inserted at roughly the middle of the operational unit (if not possible, `BEFORE`) |
 | `DISTRIBUTED` | Registers are evenly distributed to `INSIDE`, `BEFORE`, and `AFTER` (if no `INSIDE`, all `BEFORE`)   |
 
-
+#### `Division and Square-Root Unit Selection`
+The `DivSqrtSel` parameter is used to choose among the support DivSqrt units.
+It is of type `divsqrt_unit_t`, which is defined as:
+```SystemVerilog
+typedef enum logic[1:0] {
+  PULP,    // "PULP" instantiates the PULP DivSqrt unit supports FP64, FP32, FP16, FP16ALT, FP8 and SIMD operations
+  TH32,    // "TH32" instantiates the E906 DivSqrt unit supports only FP32 (no SIMD support)
+  THMULTI  // "THMULTI" instantiates the C910 DivSqrt unit supports FP64, FP32, FP16, FP16ALT and SIMD operations
+} divsqrt_unit_t;
+```
 
 ### Adding Custom Formats
 
@@ -394,12 +404,12 @@ The *operation group* is the highest level of grouping within FPnew and signifie
 
 There are currently four operation groups in FPnew which are enumerated in `opgroup_e` as outlined in the following table:
 
-| Enumerator |                  Description                  |         Associated Operations         |
-|------------|-----------------------------------------------|---------------------------------------|
-| `ADDMUL`   | Addition and Multiplication                   | `FMADD`, `FNMSUB`, `ADD`, `MUL`       |
-| `DIVSQRT`  | Division and Square Root                      | `DIV`, `SQRT`                         |
-| `NONCOMP`  | Non-Computational Operations like Comparisons | `SGNJ`, `MINMAX`, `CMP`, `CLASS`      |
-| `CONV`     | Conversions                                   | `F2I`, `I2F`, `F2F`, `CPKAB`, `CPKCD` |
+| Enumerator |                  Description                  |         Associated Operations           |
+|------------|-----------------------------------------------|-----------------------------------------|
+| `ADDMUL`   | Addition and Multiplication                   | `FMADD`, `FNMSUB`, `ADD`, `ADDS`, `MUL` |
+| `DIVSQRT`  | Division and Square Root                      | `DIV`, `SQRT`                           |
+| `NONCOMP`  | Non-Computational Operations like Comparisons | `SGNJ`, `MINMAX`, `CMP`, `CLASS`        |
+| `CONV`     | Conversions                                   | `F2I`, `I2F`, `F2F`, `CPKAB`, `CPKCD`   |
 
 Most architectural decisions for FPnew are made at very fine granularity.
 The big exception to this is the generation of vectorial hardware which is decided at top level through the `EnableVectors` parameter.

@@ -18,7 +18,7 @@ module fpnew_opgroup_block #(
   // FPU configuration
   parameter int unsigned                Width         = 32,
   parameter logic                       EnableVectors = 1'b1,
-  parameter logic                       PulpDivsqrt   = 1'b1,
+  parameter fpnew_pkg::divsqrt_unit_t   DivSqrtSel    = fpnew_pkg::THMULTI,
   parameter fpnew_pkg::fmt_logic_t      FpFmtMask     = '1,
   parameter fpnew_pkg::ifmt_logic_t     IntFmtMask    = '1,
   parameter fpnew_pkg::fmt_unsigned_t   FmtPipeRegs   = '{default: 0},
@@ -92,6 +92,7 @@ module fpnew_opgroup_block #(
 
     // Generate slice only if format enabled
     if (FpFmtMask[fmt] && (FmtUnitTypes[fmt] == fpnew_pkg::PARALLEL)) begin : active_format
+      localparam fpnew_pkg::fp_format_e FpFormat = fpnew_pkg::fp_format_e'(fmt);
 
       logic in_valid;
 
@@ -103,14 +104,14 @@ module fpnew_opgroup_block #(
       always_comb for (int b = 0; b < INTERNAL_LANES; b++) mask_slice[b] = simd_mask_i[(NUM_LANES/INTERNAL_LANES)*b];
 
       fpnew_opgroup_fmt_slice #(
-        .OpGroup       ( OpGroup                      ),
-        .FpFormat      ( fpnew_pkg::fp_format_e'(fmt) ),
-        .Width         ( Width                        ),
-        .EnableVectors ( EnableVectors                ),
-        .NumPipeRegs   ( FmtPipeRegs[fmt]             ),
-        .PipeConfig    ( PipeConfig                   ),
-        .TagType       ( TagType                      ),
-        .TrueSIMDClass ( TrueSIMDClass                )
+        .OpGroup       ( OpGroup          ),
+        .FpFormat      ( FpFormat         ),
+        .Width         ( Width            ),
+        .EnableVectors ( EnableVectors    ),
+        .NumPipeRegs   ( FmtPipeRegs[fmt] ),
+        .PipeConfig    ( PipeConfig       ),
+        .TagType       ( TagType          ),
+        .TrueSIMDClass ( TrueSIMDClass    )
       ) i_fmt_slice (
         .clk_i,
         .rst_ni,
@@ -180,7 +181,7 @@ module fpnew_opgroup_block #(
       .FpFmtConfig   ( FpFmtMask        ),
       .IntFmtConfig  ( IntFmtMask       ),
       .EnableVectors ( EnableVectors    ),
-      .PulpDivsqrt   ( PulpDivsqrt      ),
+      .DivSqrtSel    ( DivSqrtSel       ),
       .NumPipeRegs   ( REG              ),
       .PipeConfig    ( PipeConfig       ),
       .TagType       ( TagType          )
